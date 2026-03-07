@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Compact Ledger v2.3.3</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>@media print { .no-print { display: none !important; } }</style>
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/9.6.1/firebase-app.js';
+        import { getDatabase, ref, onValue, push, remove } from 'https://www.gstatic.com/firebasejs/9.6.1/firebase-database.js';
+
+        const db = getDatabase(initializeApp({ databaseURL: "https://ledger-ca2e2-default-rtdb.asia-southeast1.firebasedatabase.app/" }));
+
+        window.handleInput = (activeId, blockId) => {
+            const active = document.getElementById(activeId);
+            const block = document.getElementById(blockId);
+            block.disabled = active.value.length > 0;
+        };
+
+        window.toggleSettings = (show) => { document.getElementById('settings-view').classList.toggle('hidden', !show); };
+        
+        window.postEntry = () => {
+            const d = document.getElementById('date'), p = document.getElementById('proj'), c = document.getElementById('part'), dr = document.getElementById('debit'), cr = document.getElementById('credit');
+            
+            // Mandatory Validation
+            if(!d.value || !p.value || !c.value || (!dr.value && !cr.value)) return alert("Please fill all fields!");
+            
+            push(ref(db, 'cash_ledger'), { date: d.value, project: p.value, particulars: c.value, debit: dr.value || 0, credit: cr.value || 0 }).then(() => { 
+                // Full Reset
+                d.value = ''; p.value = ''; c.value = ''; dr.value = ''; cr.value = '';
+                cr.disabled = false; dr.disabled = false;
+            });
+        };
+
+        window.addSetting = (type) => {
+            const val = document.getElementById(`new-${type}`).value;
+            if(!val) return;
+            push(ref(db, `settings/${type}`), val).then(() => { document.getElementById(`new-${type}`).value = ''; });
+        };
+
+        window.deleteSetting = (type, id) => { remove(ref(db, `settings/${type}/${id}`)); };
+        window.deleteEntry = (id) => { if(confirm("Delete this entry?")) remove(ref(db, 'cash_ledger/' + id)); };
+        
+        onValue(ref(db, 'cash_ledger'), (snap) => { window.globalData = snap.val() || {}; renderTable(); });
+        onValue(ref(db, 'settings'), (snap) => {
+            const data = snap.val() || {}, projs = data.projects || {}, cats = data.categories || {};
+            document.getElementById('proj').innerHTML = '<option value="">Project</option>' + Object.values(projs).map(p => `<option value="${p}">${p}</option>`).join('');
+            document.getElementById('part').innerHTML = '<option value="">Category</option>' + Object.values(cats).map(c => `<option value="${c}">${c}</option>`).join('');
+            document.getElementById('proj-filter').innerHTML = '<option value="">All Projects</option>' + Object.values(projs).map(p => `<option value="${p}">${p}</option>`).join('');
+            document.getElementById('cat-list').innerHTML = Object.entries(cats).map(([id, n]) => `<div class="flex justify-between p-2 border-b text-sm">${n}<button onclick="deleteSetting('categories','${id}')" class="text-red-500 font-bold">✕</button></div>`).join('');
+            document.getElementById('proj-list').innerHTML = Object.entries(projs).map(([id, n]) => `<div class="flex justify-between p-2 border-b text-sm">${n}<button onclick="deleteSetting('projects','${id}')" class="text-red-500 font-bold">✕</button></div>`).join('');
+        });
+
+        window.renderTable = () => {
+            const query = document.getElementById('search-bar').value.toLowerCase(), projFilter = document.getElementById('proj-filter').value;
+            let dTot = 0, cTot = 0;
+            const entries = Object.entries(window.globalData).sort((a, b) => new Date(b[1].date) - new Date(a[1].date));
+            
+            document.getElementById('ledger-body').innerHTML = entries.filter(([k, e]) => (e.particulars.toLowerCase().includes(query)) && (projFilter ? e.project === projFilter : true)).map(([k, e]) => {
+                dTot += parseFloat(e.debit || 0); cTot += parseFloat(e.credit || 0);
+                return `<tr class="border-b"><td class="p-3">${e.date}</td><td class="p-3">${e.project}</td><td class="p-3 font-semibold">${e.particulars}</td><td class="p-3 text-right">${parseFloat(e.debit) > 0 ? `<span class="text-red-600 font-bold">${parseFloat(e.debit).toFixed(2)}</span>` : '-'}</td><td class="p-3 text-right">${parseFloat(e.credit) > 0 ? `<span class="text-emerald-600 font-bold">${parseFloat(e.credit).toFixed(2)}</span>` : '-'}</td><td class="p-3 text-center no-print"><button onclick="deleteEntry('${k}')" class="text-red-500 font-bold">✕</button></td></tr>`;
+            }).join('');
+            document.getElementById('stats').innerHTML = `<div class="bg-red-50 p-4 rounded text-center font-bold text-red-700">Debit: ${dTot.toFixed(2)}</div><div class="bg-emerald-50 p-4 rounded text-center font-bold text-emerald-700">Credit: ${cTot.toFixed(2)}</div><div class="bg-blue-50 p-4 rounded text-center font-bold text-blue-700">Balance: ${(dTot - cTot).toFixed(2)}</div>`;
+        };
+    </script>
+</head>
+<body class="bg-slate-50 p-4">
+    <div class="max-w-4xl mx-auto">
+        <div class="no-print flex gap-2 mb-4">
+            <input id="search-bar" oninput="renderTable()" placeholder="Search..." class="border p-2 w-full rounded">
+            <select id="proj-filter" onchange="renderTable()" class="border p-2 rounded"></select>
+            <button onclick="toggleSettings(true)" class="bg-slate-800 text-white px-4 rounded">⚙️</button>
+            <button onclick="window.print()" class="bg-blue-600 text-white px-4 rounded">Print</button>
+        </div>
+        <div class="no-print bg-white p-4 rounded shadow mb-4 grid grid-cols-2 md:grid-cols-4 gap-2">
+            <input id="date" type="date" class="border p-2 rounded"><select id="proj" class="border p-2 rounded"></select><select id="part" class="border p-2 rounded col-span-2"></select>
+            <input id="debit" oninput="handleInput('debit','credit')" type="number" placeholder="Debit" class="border p-2 rounded">
+            <input id="credit" oninput="handleInput('credit','debit')" type="number" placeholder="Credit" class="border p-2 rounded">
+            <button onclick="postEntry()" class="col-span-2 bg-blue-600 text-white p-2 rounded">Add Entry</button>
+        </div>
+        <div id="stats" class="grid grid-cols-3 gap-4 mb-4"></div>
+        <div class="bg-white shadow rounded overflow-hidden">
+            <table class="w-full text-left"><thead class="bg-slate-100 text-xs uppercase text-slate-500"><tr><th class="p-3">Date</th><th class="p-3">Project</th><th class="p-3">Category</th><th class="p-3 text-right">Debit</th><th class="p-3 text-right">Credit</th><th class="p-3 text-center no-print">X</th></tr></thead><tbody id="ledger-body"></tbody></table>
+        </div>
+        <div id="settings-view" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center p-4">
+            <div class="bg-white p-6 rounded w-full max-w-sm max-h-[80vh] overflow-y-auto">
+                <h2 class="font-bold mb-4">Manage Settings</h2>
+                <div class="mb-6"><input id="new-categories" placeholder="New Category" class="border p-1 w-full"><button onclick="addSetting('categories')" class="w-full bg-green-500 text-white mt-1 rounded">Add Category</button><div id="cat-list"></div></div>
+                <div class="mb-6"><input id="new-projects" placeholder="New Project" class="border p-1 w-full"><button onclick="addSetting('projects')" class="w-full bg-green-500 text-white mt-1 rounded">Add Project</button><div id="proj-list"></div></div>
+                <button onclick="toggleSettings(false)" class="w-full bg-slate-300 p-2 rounded">Close</button>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
