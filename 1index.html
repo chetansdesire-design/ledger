@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Compact Ledger v2.1.0</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @media print {
+            .no-print { display: none !important; }
+            table { border-collapse: collapse; width: 100%; }
+            th, td { border: 1px solid #ddd; padding: 8px; }
+        }
+    </style>
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/9.6.1/firebase-app.js';
+        import { getDatabase, ref, onValue, push, remove, set, get } from 'https://www.gstatic.com/firebasejs/9.6.1/firebase-database.js';
+
+        const db = getDatabase(initializeApp({ databaseURL: "https://ledger-ca2e2-default-rtdb.asia-southeast1.firebasedatabase.app/" }));
+
+        let globalData = {};
+
+        const resetForm = () => {
+            document.querySelectorAll('input:not(#search-input), select').forEach(el => { el.value = ''; el.disabled = false; });
+        };
+
+        window.formatText = (el) => { el.value = el.value.replace(/\b\w/g, (c) => c.toUpperCase()); };
+        window.toggleView = (id) => document.getElementById(id).classList.toggle('hidden');
+        window.deleteEntry = (id) => { if(confirm("Confirm: Permanently delete?")) remove(ref(db, 'cash_ledger/' + id)); };
+        window.toggleFields = (changedEl, targetId) => { document.getElementById(targetId).disabled = changedEl.value.length > 0; };
+        
+        onValue(ref(db, 'cash_ledger'), (snap) => { globalData = snap.val() || {}; render(); });
+        onValue(ref(db, 'settings/particulars'), (snap) => {
+            const cats = snap.val() || [];
+            document.getElementById('part').innerHTML = '<option value="">Select Category</option>' + cats.map(c => `<option value="${c}">${c}</option>`).join('');
+            document.getElementById('cat-list').innerHTML = cats.map(c => `<div class="flex justify-between p-3 border-b text-sm"><span>${c}</span><button onclick="deleteCat('${c}')" class="text-red-500 font-bold">X</button></div>`).join('');
+        });
+
+        window.render = () => {
+            const query = document.getElementById('search-input').value.toLowerCase();
+            const body = document.getElementById('ledger-body');
+            let dTot = 0, cTot = 0;
+            body.innerHTML = '';
+            
+            Object.entries(globalData || {}).forEach(([k, e]) => {
+                if (e.particulars.toLowerCase().includes(query)) {
+                    const d = parseFloat(e.debit || 0);
+                    const c = parseFloat(e.credit || 0);
+                    dTot += d; cTot += c;
+                    body.innerHTML += `<tr class="border-b text-sm">
+                        <td class="p-3">${e.date}</td>
+                        <td class="p-3 font-bold">${e.particulars}</td>
+                        <td class="p-3 text-xs">${e.desc || ''}</td>
+                        <td class="p-3 text-right text-red-600">${d.toFixed(2)}</td>
+                        <td class="p-3 text-right text-emerald-600">${c.toFixed(2)}</td>
+                        <td class="p-3 text-center no-print"><button onclick="deleteEntry('${k}')" class="text-red-500 font-bold">X</button></td>
+                    </tr>`;
+                }
+            });
+            document.getElementById('stats').innerHTML = `<div class="bg-red-100 p-3 rounded text-red-800 font-bold text-sm text-center">Dr: ${dTot.toFixed(2)}</div><div class="bg-emerald-100 p-3 rounded text-emerald-800 font-bold text-sm text-center">Cr: ${cTot.toFixed(2)}</div><div class="bg-blue-100 p-3 rounded text-blue-800 font-bold text-sm text-center">Bal: ${(dTot - cTot).toFixed(2)}</div>`;
+        };
+
+        window.postEntry = () => {
+            const date = document.getElementById('date').value;
+            const part = document.getElementById('part').value;
+            const desc = document.getElementById('desc').value;
+            const debit = document.getElementById('debit').value;
+            const credit = document.getElementById('credit').value;
+            if (!date || !part || (!debit && !credit)) return alert("Mandatory: Date, Category, and Amount!");
+            push(ref(db, 'cash_ledger'), { date, particulars: part, desc, debit: debit || 0, credit: credit || 0 }).then(resetForm);
+        };
+
+        window.addCat = () => {
+            const input = document.getElementById('new-cat');
+            if (!input.value) return;
+            get(ref(db, 'settings/particulars')).then(snap => {
+                const val = input.value;
+                set(ref(db, 'settings/particulars'), [...(snap.val() || []), val]);
+                input.value = '';
+            });
+        };
+
+        window.deleteCat = (c) => {
+            get(ref(db, 'settings/particulars')).then(snap => { set(ref(db, 'settings/particulars'), snap.val().filter(i => i !== c)); });
+        };
+    </script>
+</head>
+<body class="bg-gray-50 p-3">
+    <div class="max-w-3xl mx-auto w-full">
+        <div class="no-print flex justify-between items-center mb-4">
+            <h1 class="text-xl font-bold">Ledger</h1>
+            <div class="flex gap-2 text-xl">
+                <input id="search-input" oninput="render()" placeholder="Search..." class="border p-2 text-sm rounded w-24 sm:w-48">
+                <button onclick="window.print()" class="p-2" title="Print">📥</button>
+                <button onclick="toggleView('settings-view')" class="p-2" title="Settings">⚙️</button>
+            </div>
+        </div>
+        
+        <div class="no-print bg-white p-4 rounded shadow mb-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <input id="date" type="date" class="border p-3 rounded w-full">
+            <select id="part" class="border p-3 rounded w-full"></select>
+            <input id="desc" type="text" placeholder="Description" oninput="formatText(this)" class="col-span-1 sm:col-span-2 border p-3 rounded w-full">
+            <input id="debit" type="number" placeholder="Debit" oninput="toggleFields(this, 'credit')" class="border p-3 rounded w-full">
+            <input id="credit" type="number" placeholder="Credit" oninput="toggleFields(this, 'debit')" class="border p-3 rounded w-full">
+            <button onclick="postEntry()" class="col-span-1 sm:col-span-2 bg-blue-600 text-white p-3 rounded font-bold">Add Entry</button>
+        </div>
+
+        <div id="stats" class="grid grid-cols-3 gap-2 mb-4"></div>
+
+        <div class="bg-white shadow-sm overflow-x-auto w-full">
+            <table class="w-full text-left min-w-[500px]">
+                <thead class="bg-gray-100 text-gray-600 text-xs uppercase">
+                    <tr><th class="p-3">Date</th><th class="p-3">Cat.</th><th class="p-3">Desc.</th><th class="p-3 text-right">Dr</th><th class="p-3 text-right">Cr</th><th class="p-3 text-center no-print">X</th></tr>
+                </thead>
+                <tbody id="ledger-body"></tbody>
+            </table>
+        </div>
+        
+        <div id="settings-view" class="no-print hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
+            <div class="bg-white p-6 rounded shadow w-full max-w-sm">
+                <div class="flex justify-between mb-4"><h2 class="font-bold">Manage Categories</h2><button onclick="toggleView('settings-view')">✕</button></div>
+                <div class="flex gap-2 mb-4"><input id="new-cat" oninput="formatText(this)" class="border p-2 flex-grow"><button onclick="addCat()" class="bg-green-600 text-white px-4 py-2 rounded">+</button></div>
+                <div id="cat-list"></div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
