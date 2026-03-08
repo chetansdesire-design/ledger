@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Urban Casa - Cash Ledger</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
+    <style>
+        @media print { 
+            .no-print { display: none !important; } 
+            * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+        }
+        .input-focus:focus { outline: 2px solid #f59e0b; border-color: transparent; }
+    </style>
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/9.6.1/firebase-app.js';
+        import { getDatabase, ref, onValue, push, remove, set } from 'https://www.gstatic.com/firebasejs/9.6.1/firebase-database.js';
+
+        const db = getDatabase(initializeApp({ databaseURL: "https://ledger-ca2e2-default-rtdb.asia-southeast1.firebasedatabase.app/" }));
+
+        window.globalData = {};
+
+        window.checkPassword = () => {
+            if(document.getElementById('pass-input').value === 'admin789') {
+                document.getElementById('auth-overlay').classList.add('hidden');
+            } else { alert('Invalid Password'); }
+        };
+
+        const formatText = (str) => str.toLowerCase().split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+
+        window.postEntry = () => {
+            const d = document.getElementById('date'), p = document.getElementById('proj'), 
+                  c = document.getElementById('part'), dr = document.getElementById('debit'), 
+                  cr = document.getElementById('credit'), rem = document.getElementById('remarks');
+            if(!d.value || !p.value || !c.value || (!dr.value && !cr.value)) return alert("Fill required fields!");
+            push(ref(db, 'cash_ledger'), { date: d.value, project: p.value, particulars: c.value, remarks: formatText(rem.value), debit: dr.value || 0, credit: cr.value || 0 });
+            [d, p, c, dr, cr, rem].forEach(el => el.value = '');
+        };
+
+        window.backupData = () => {
+            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(window.globalData));
+            const a = document.createElement('a'); a.href = dataStr; a.download = "ledger_backup.json"; a.click();
+        };
+
+        window.restoreData = (e) => {
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+                if(confirm("Restore data? This will REPLACE all current ledger entries!")) {
+                    set(ref(db, 'cash_ledger'), JSON.parse(ev.target.result));
+                    alert("Data restored!");
+                }
+            };
+            reader.readAsText(e.target.files[0]);
+        };
+
+        window.clearLedger = () => {
+            const pass = prompt("WARNING: This will delete ALL data. Enter password to confirm:");
+            if(pass === 'admin789') {
+                if(confirm("ARE YOU ABSOLUTELY SURE? This cannot be undone.")) {
+                    set(ref(db, 'cash_ledger'), null);
+                    alert("Ledger cleared successfully.");
+                }
+            } else { alert("Incorrect password or operation cancelled."); }
+        };
+
+        window.exportPDF = () => {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF();
+            doc.text("Urban Casa - Cash Ledger Report", 14, 15);
+            const rows = [];
+            document.querySelectorAll('#ledger-body tr').forEach(tr => {
+                const tds = tr.querySelectorAll('td');
+                rows.push([tds[0].innerText, tds[1].innerText, tds[2].innerText.replace(/\n/g, ' '), tds[3].innerText, tds[4].innerText]);
+            });
+            doc.autoTable({ head: [['Date', 'Project', 'Particulars', 'Debit', 'Credit']], body: rows, startY: 25 });
+            doc.save('ledger_report.pdf');
+        };
+
+        window.deleteEntry = (id) => { if(confirm("Delete this entry?")) remove(ref(db, 'cash_ledger/' + id)); };
+        window.toggleSettings = (show) => { document.getElementById('settings-view').classList.toggle('hidden', !show); };
+        window.addSetting = (t) => { const i = document.getElementById('new-'+t); if(i.value) push(ref(db, 'settings/'+t), formatText(i.value)); i.value = ''; };
+        window.deleteSetting = (t, id) => remove(ref(db, 'settings/'+t+'/'+id));
+
+        onValue(ref(db, 'cash_ledger'), (snap) => { window.globalData = snap.val() || {}; renderTable(); });
+        onValue(ref(db, 'settings'), (snap) => {
+            const d = snap.val() || {}, p = Object.entries(d.projects || {}), c = Object.entries(d.categories || {});
+            document.getElementById('proj').innerHTML = '<option value="">Project</option>' + p.map(x => `<option value="${x[1]}">${x[1]}</option>`).join('');
+            document.getElementById('part').innerHTML = '<option value="">Category</option>' + c.map(x => `<option value="${x[1]}">${x[1]}</option>`).join('');
+            document.getElementById('proj-filter').innerHTML = '<option value="">All Projects</option>' + p.map(x => `<option value="${x[1]}">${x[1]}</option>`).join('');
+            document.getElementById('proj-list').innerHTML = p.map(x => `<div class="flex justify-between p-2 text-sm">${x[1]}<button onclick="deleteSetting('projects','${x[0]}')" class="text-rose-500 font-bold">✕</button></div>`).join('');
+            document.getElementById('cat-list').innerHTML = c.map(x => `<div class="flex justify-between p-2 text-sm">${x[1]}<button onclick="deleteSetting('categories','${x[0]}')" class="text-rose-500 font-bold">✕</button></div>`).join('');
+        });
+
+        window.renderTable = () => {
+            const q = document.getElementById('search-bar').value.toLowerCase(), pf = document.getElementById('proj-filter').value;
+            let dTot = 0, cTot = 0;
+            document.getElementById('ledger-body').innerHTML = Object.entries(window.globalData).sort((a,b) => new Date(b[1].date) - new Date(a[1].date)).filter(([k,e]) => (e.particulars.toLowerCase().includes(q) || (e.remarks||'').toLowerCase().includes(q)) && (pf ? e.project === pf : true)).map(([k,e]) => {
+                dTot += parseFloat(e.debit || 0); cTot += parseFloat(e.credit || 0);
+                return `<tr class="border-b hover:bg-slate-50"><td class="p-3 font-mono text-sm">${e.date}</td><td class="p-3 text-sm">${e.project}</td><td class="p-3 font-bold text-slate-800">${e.particulars}<br><span class="text-xs font-normal text-slate-500 italic">${e.remarks||''}</span></td><td class="p-3 text-right text-rose-600">${parseFloat(e.debit)>0?parseFloat(e.debit).toFixed(2):'-'}</td><td class="p-3 text-right text-emerald-600">${parseFloat(e.credit)>0?parseFloat(e.credit).toFixed(2):'-'}</td><td class="p-3 text-center no-print"><button onclick="deleteEntry('${k}')" class="text-slate-300 hover:text-rose-500">✕</button></td></tr>`;
+            }).join('');
+            document.getElementById('stats').innerHTML = `<div class="bg-emerald-50 p-4 rounded-xl text-center"><p class="text-[10px] uppercase font-bold text-emerald-400">Total Credit (In)</p><p class="text-xl font-black text-emerald-600">${cTot.toFixed(2)}</p></div><div class="bg-rose-50 p-4 rounded-xl text-center"><p class="text-[10px] uppercase font-bold text-rose-400">Total Debit (Out)</p><p class="text-xl font-black text-rose-600">${dTot.toFixed(2)}</p></div><div class="${(cTot-dTot)>=0?'bg-emerald-600':'bg-rose-600'} text-white p-4 rounded-xl text-center"><p class="text-[10px] uppercase font-bold opacity-80">Net Balance</p><p class="text-xl font-black">${(cTot-dTot).toFixed(2)}</p></div>`;
+        };
+    </script>
+</head>
+<body class="bg-slate-50 p-4">
+    <div class="max-w-5xl mx-auto">
+        <div class="flex justify-between items-center mb-6">
+            <h1 class="text-3xl font-black text-slate-900">CASH LEDGER</h1>
+            <div class="no-print flex gap-2">
+                <button onclick="window.print()" class="bg-slate-200 px-4 py-2 rounded-xl font-bold text-sm">Print</button>
+                <button onclick="toggleSettings(true)" class="bg-slate-900 text-white px-6 py-2 rounded-xl font-bold text-sm">Settings</button>
+            </div>
+        </div>
+        <div class="no-print flex gap-3 mb-6">
+            <input id="search-bar" oninput="renderTable()" placeholder="Search..." class="border p-3 w-full rounded-xl">
+            <select id="proj-filter" onchange="renderTable()" class="border p-3 rounded-xl font-bold"></select>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6 no-print bg-white p-6 rounded-2xl shadow-sm border">
+            <input id="date" type="date" class="border p-2 rounded-lg">
+            <select id="proj" class="border p-2 rounded-lg"></select>
+            <select id="part" class="border p-2 rounded-lg"></select>
+            <input id="remarks" placeholder="Remarks" class="border p-2 rounded-lg">
+            <input id="debit" type="number" placeholder="Debit (Out)" class="border p-2 rounded-lg text-rose-600 font-bold">
+            <input id="credit" type="number" placeholder="Credit (In)" class="border p-2 rounded-lg text-emerald-600 font-bold">
+            <button onclick="postEntry()" class="md:col-span-1 bg-amber-500 rounded-lg font-bold">POST</button>
+        </div>
+        <div id="stats" class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8"></div>
+        <div class="bg-white shadow-lg rounded-2xl overflow-hidden border">
+            <table class="w-full text-left"><thead class="bg-slate-900 text-white text-[10px] uppercase"><tr><th class="p-4">Date</th><th class="p-4">Project</th><th class="p-4">Particulars</th><th class="p-4 text-right">Debit (Out)</th><th class="p-4 text-right">Credit (In)</th><th class="p-4 no-print"></th></tr></thead><tbody id="ledger-body"></tbody></table>
+        </div>
+        <div id="settings-view" class="hidden fixed inset-0 bg-slate-900/90 p-4 z-50 flex items-center justify-center">
+            <div class="bg-white p-8 rounded-3xl w-full max-w-sm">
+                <div class="flex items-center gap-3 mb-6">
+                    <button onclick="toggleSettings(false)" class="bg-slate-100 p-2 rounded-lg font-bold">← Back</button>
+                    <h2 class="font-bold text-lg uppercase">Configuration</h2>
+                </div>
+                <input id="new-categories" placeholder="New Category" class="border p-2 w-full mb-2">
+                <button onclick="addSetting('categories')" class="w-full bg-slate-900 text-white p-2 rounded mb-4">Add Category</button>
+                <div id="cat-list" class="mb-4 max-h-24 overflow-y-auto"></div>
+                <input id="new-projects" placeholder="New Project" class="border p-2 w-full mb-2">
+                <button onclick="addSetting('projects')" class="w-full bg-slate-900 text-white p-2 rounded mb-4">Add Project</button>
+                <div id="proj-list" class="mb-4 max-h-24 overflow-y-auto"></div>
+                <button onclick="backupData()" class="w-full bg-emerald-600 text-white p-2 rounded mb-2">Backup JSON</button>
+                <label class="block text-center bg-slate-200 p-2 rounded cursor-pointer mb-2">Restore JSON<input type="file" onchange="restoreData(event)" class="hidden"></label>
+                <button onclick="exportPDF()" class="w-full bg-slate-700 text-white p-2 rounded mb-2">Export PDF Report</button>
+                <button onclick="clearLedger()" class="w-full bg-rose-600 text-white p-2 rounded mt-4 font-bold text-sm">Clear All Data</button>
+            </div>
+        </div>
+        <div id="auth-overlay" class="fixed inset-0 bg-slate-900 z-[100] flex items-center justify-center p-4">
+            <div class="bg-white p-8 rounded-3xl w-full max-w-sm text-center">
+                <h2 class="font-black text-xl mb-4">ENTER PASSWORD</h2>
+                <input id="pass-input" type="password" class="border p-3 w-full rounded-xl mb-4">
+                <button onclick="checkPassword()" class="bg-amber-500 w-full py-3 rounded-xl font-black">LOGIN</button>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
