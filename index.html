@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Urban Casa - Professional Ledger</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
+    <style>
+        @media print { .no-print { display: none !important; } }
+        .custom-scroll::-webkit-scrollbar { width: 6px; }
+        .custom-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+    </style>
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/9.6.1/firebase-app.js';
+        import { getDatabase, ref, onValue, push, remove, set } from 'https://www.gstatic.com/firebasejs/9.6.1/firebase-database.js';
+
+        const firebaseConfig = { databaseURL: "https://ledger-ca2e2-default-rtdb.asia-southeast1.firebasedatabase.app/" };
+        const app = initializeApp(firebaseConfig);
+        const db = getDatabase(app);
+
+        window.globalData = {};
+        window.currentPassword = 'admin789';
+
+        // 1. Password Sync
+        onValue(ref(db, 'settings/adminPassword'), (snap) => {
+            if(snap.exists()) window.currentPassword = snap.val();
+        });
+
+        window.checkPassword = () => {
+            if(document.getElementById('pass-input').value === window.currentPassword) {
+                document.getElementById('auth-overlay').style.display = 'none';
+            } else { alert('Invalid Password'); }
+        };
+
+        window.changePassword = () => {
+            const newPass = document.getElementById('new-password-input').value;
+            if(newPass.length < 4) return alert("Password too short!");
+            set(ref(db, 'settings/adminPassword'), newPass).then(() => alert("Password Updated!"));
+        };
+
+        // 2. Data Operations
+        window.postEntry = () => {
+            const d = document.getElementById('date'), p = document.getElementById('proj'), 
+                  c = document.getElementById('part'), dr = document.getElementById('debit'), 
+                  cr = document.getElementById('credit'), rem = document.getElementById('remarks');
+            
+            if(!d.value || !p.value || !c.value || (!dr.value && !cr.value)) return alert("Fill required fields!");
+
+            push(ref(db, 'cash_ledger'), { 
+                date: d.value, project: p.value, particulars: c.value, 
+                remarks: rem.value, debit: parseFloat(dr.value) || 0, 
+                credit: parseFloat(cr.value) || 0
+            });
+            [dr, cr, rem].forEach(el => el.value = '');
+        };
+
+        window.backupData = () => {
+            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(window.globalData));
+            const a = document.createElement('a'); a.href = dataStr; 
+            a.download = `ledger_backup_${new Date().toISOString().split('T')[0]}.json`;
+            a.click();
+        };
+
+        window.restoreData = (e) => {
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+                if(confirm("REPLACE all data with this backup?")) {
+                    set(ref(db, 'cash_ledger'), JSON.parse(ev.target.result));
+                    alert("Data Restored!");
+                }
+            };
+            reader.readAsText(e.target.files[0]);
+        };
+
+        window.clearLedger = () => {
+            if(prompt("Enter 'DELETE' to wipe all data:") === 'DELETE') {
+                set(ref(db, 'cash_ledger'), null);
+            }
+        };
+
+        window.exportCSV = () => {
+            let csv = "Date,Project,Particulars,Remarks,Debit,Credit\n";
+            Object.values(window.globalData).forEach(e => {
+                csv += `${e.date},${e.project},${e.particulars},"${e.remarks || ''}",${e.debit},${e.credit}\n`;
+            });
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a'); a.href = url; a.download = "ledger.csv"; a.click();
+        };
+
+        // 3. Listeners & Rendering
+        window.deleteEntry = (id) => { if(confirm("Delete?")) remove(ref(db, 'cash_ledger/' + id)); };
+        window.toggleSettings = (show) => { document.getElementById('settings-view').classList.toggle('hidden', !show); };
+        window.addSetting = (t) => { 
+            const i = document.getElementById('new-'+t); 
+            if(i.value) push(ref(db, 'settings/'+t), i.value.trim()); i.value = ''; 
+        };
+        window.deleteSetting = (t, id) => remove(ref(db, 'settings/'+t+'/'+id));
+
+        onValue(ref(db, 'cash_ledger'), (snap) => { 
+            window.globalData = snap.val() || {}; 
+            renderTable(); 
+        });
+
+        onValue(ref(db, 'settings'), (snap) => {
+            const d = snap.val() || {}, p = Object.entries(d.projects || {}), c = Object.entries(d.categories || {});
+            document.getElementById('proj').innerHTML = '<option value="">Project</option>' + p.map(x => `<option value="${x[1]}">${x[1]}</option>`).join('');
+            document.getElementById('part').innerHTML = '<option value="">Category</option>' + c.map(x => `<option value="${x[1]}">${x[1]}</option>`).join('');
+            document.getElementById('proj-filter').innerHTML = '<option value="">All Projects</option>' + p.map(x => `<option value="${x[1]}">${x[1]}</option>`).join('');
+            document.getElementById('proj-list').innerHTML = p.map(x => `<div class="flex justify-between p-3 bg-white border rounded-xl mb-2">${x[1]}<button onclick="deleteSetting('projects','${x[0]}')" class="text-rose-500">✕</button></div>`).join('');
+            document.getElementById('cat-list').innerHTML = c.map(x => `<div class="flex justify-between p-3 bg-white border rounded-xl mb-2">${x[1]}<button onclick="deleteSetting('categories','${x[0]}')" class="text-rose-500">✕</button></div>`).join('');
+        });
+
+        window.renderTable = () => {
+            const q = document.getElementById('search-bar').value.toLowerCase();
+            const pf = document.getElementById('proj-filter').value;
+            let dTot = 0, cTot = 0, runningBal = 0;
+            
+            // Sort data chronologically to calculate running balance correctly
+            const sortedEntries = Object.entries(window.globalData).sort((a,b) => new Date(a[1].date) - new Date(b[1].date));
+
+            const html = sortedEntries.map(([k,e]) => {
+                const debit = parseFloat(e.debit) || 0;
+                const credit = parseFloat(e.credit) || 0;
+                
+                // Calculate balance for every item in chronological order
+                runningBal += (credit - debit);
+
+                if ((e.particulars.toLowerCase().includes(q) || (e.remarks||'').toLowerCase().includes(q)) && (pf ? e.project === pf : true)) {
+                    dTot += debit; cTot += credit;
+                    return `<tr class="border-b hover:bg-slate-50"><td class="p-4 font-mono text-xs">${e.date}</td><td class="p-4 text-sm font-bold">${e.project}</td><td class="p-4"><span class="font-bold">${e.particulars}</span><br><span class="text-xs text-slate-400">${e.remarks||''}</span></td><td class="p-4 text-right text-rose-600 font-bold">${debit > 0 ? debit.toFixed(2) : '-'}</td><td class="p-4 text-right text-emerald-600 font-bold">${credit > 0 ? credit.toFixed(2) : '-'}</td><td class="p-4 text-right font-black ${runningBal >= 0 ? 'text-slate-700' : 'text-rose-500'}">${runningBal.toFixed(2)}</td><td class="p-4 text-center no-print"><button onclick="deleteEntry('${k}')" class="text-slate-300 hover:text-rose-500">✕</button></td></tr>`;
+                }
+                return '';
+            }).reverse().join(''); // Reverse for display (Newest at top)
+
+            document.getElementById('ledger-body').innerHTML = html || '<tr><td colspan="7" class="p-10 text-center text-slate-400">No transactions</td></tr>';
+            document.getElementById('stats').innerHTML = `<div class="bg-white p-6 rounded-3xl border shadow-sm text-center"><p class="text-xs font-bold text-slate-400 uppercase">Total In</p><p class="text-2xl font-black text-emerald-600">${cTot.toLocaleString()}</p></div><div class="bg-white p-6 rounded-3xl border shadow-sm text-center"><p class="text-xs font-bold text-slate-400 uppercase">Total Out</p><p class="text-2xl font-black text-rose-600">${dTot.toLocaleString()}</p></div><div class="${(cTot-dTot)>=0?'bg-slate-900':'bg-rose-600'} text-white p-6 rounded-3xl shadow-xl text-center"><p class="text-xs font-bold opacity-70 uppercase">Net Balance</p><p class="text-2xl font-black">${(cTot-dTot).toLocaleString()}</p></div>`;
+        };
+    </script>
+</head>
+<body class="bg-[#f8fafc] text-slate-900 min-h-screen">
+    <div class="max-w-6xl mx-auto p-4 lg:p-8">
+        <header class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-10">
+            <div>
+                <h1 class="text-4xl font-black tracking-tighter italic">URBAN CASA <span class="text-amber-500 not-italic">.</span></h1>
+                <p class="text-slate-400 font-bold text-xs uppercase tracking-widest">Financial Ledger Dashboard</p>
+            </div>
+            <div class="no-print flex gap-3">
+                <button onclick="window.print()" class="bg-white border px-5 py-2.5 rounded-2xl font-bold text-sm shadow-sm hover:bg-slate-50">Print</button>
+                <button onclick="toggleSettings(true)" class="bg-amber-500 text-white px-8 py-2.5 rounded-2xl font-black text-sm shadow-lg shadow-amber-200">SETTINGS</button>
+            </div>
+        </header>
+
+        <div class="no-print grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+            <input id="search-bar" oninput="renderTable()" placeholder="Search transactions..." class="md:col-span-3 w-full px-6 py-4 rounded-3xl border shadow-sm outline-none focus:ring-2 focus:ring-amber-500">
+            <select id="proj-filter" onchange="renderTable()" class="bg-white px-6 py-4 rounded-3xl border shadow-sm font-bold text-slate-600 outline-none"></select>
+        </div>
+
+        <div class="no-print bg-white p-6 rounded-[2rem] shadow-sm border border-slate-100 mb-10">
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-3">
+                <input id="date" type="date" class="bg-slate-50 p-3 rounded-2xl text-sm outline-none">
+                <select id="proj" class="bg-slate-50 p-3 rounded-2xl text-sm outline-none"></select>
+                <select id="part" class="bg-slate-50 p-3 rounded-2xl text-sm outline-none"></select>
+                <input id="remarks" placeholder="Remarks" class="bg-slate-50 p-3 rounded-2xl text-sm outline-none">
+                <input id="debit" type="number" placeholder="Debit" class="bg-rose-50 p-3 rounded-2xl text-sm font-bold text-rose-600 outline-none">
+                <input id="credit" type="number" placeholder="Credit" class="bg-emerald-50 p-3 rounded-2xl text-sm font-bold text-emerald-600 outline-none">
+                <button onclick="postEntry()" class="bg-slate-900 text-white p-3.5 rounded-2xl font-black hover:bg-black shadow-xl">POST</button>
+            </div>
+        </div>
+
+        <div id="stats" class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10"></div>
+
+        <div class="bg-white shadow-2xl rounded-[2rem] overflow-hidden border border-white">
+            <div class="overflow-x-auto">
+                <table class="w-full text-left">
+                    <thead>
+                        <tr class="bg-slate-50 text-slate-400 text-[10px] uppercase tracking-widest border-b">
+                            <th class="p-5">Date</th><th class="p-5">Project</th><th class="p-5">Particulars</th>
+                            <th class="p-5 text-right">Debit</th><th class="p-5 text-right">Credit</th>
+                            <th class="p-5 text-right">Balance</th><th class="p-5 no-print"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="ledger-body" class="divide-y divide-slate-50 text-slate-700"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div id="settings-view" class="hidden fixed inset-0 bg-slate-50 z-[150] overflow-y-auto p-6 lg:p-12">
+            <div class="max-w-4xl mx-auto">
+                <div class="flex items-center justify-between mb-12">
+                    <h2 class="text-4xl font-black tracking-tighter uppercase">Settings</h2>
+                    <button onclick="toggleSettings(false)" class="bg-slate-900 text-white px-8 py-3 rounded-2xl font-black">CLOSE</button>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-12">
+                    <div class="space-y-10">
+                        <section>
+                            <h3 class="text-lg font-black mb-4 flex items-center gap-2"><span class="w-2 h-6 bg-amber-500 rounded-full"></span> Projects</h3>
+                            <div class="flex gap-2 mb-4">
+                                <input id="new-projects" placeholder="Project name..." class="flex-1 bg-white border p-4 rounded-2xl outline-none">
+                                <button onclick="addSetting('projects')" class="bg-slate-200 px-6 rounded-2xl font-bold">ADD</button>
+                            </div>
+                            <div id="proj-list" class="max-h-64 overflow-y-auto"></div>
+                        </section>
+                        <section>
+                            <h3 class="text-lg font-black mb-4 flex items-center gap-2"><span class="w-2 h-6 bg-emerald-500 rounded-full"></span> Categories</h3>
+                            <div class="flex gap-2 mb-4">
+                                <input id="new-categories" placeholder="Category name..." class="flex-1 bg-white border p-4 rounded-2xl outline-none">
+                                <button onclick="addSetting('categories')" class="bg-slate-200 px-6 rounded-2xl font-bold">ADD</button>
+                            </div>
+                            <div id="cat-list" class="max-h-64 overflow-y-auto"></div>
+                        </section>
+                    </div>
+                    <div class="space-y-10">
+                        <section class="bg-white p-8 rounded-[2rem] shadow-sm border">
+                            <h3 class="text-lg font-black mb-4">Security</h3>
+                            <input id="new-password-input" type="password" placeholder="New Password" class="w-full bg-slate-50 border p-4 rounded-2xl mb-3 outline-none">
+                            <button onclick="changePassword()" class="w-full bg-slate-900 text-white py-4 rounded-2xl font-black">UPDATE PASSWORD</button>
+                        </section>
+                        <section class="bg-white p-8 rounded-[2rem] shadow-sm border space-y-3">
+                            <h3 class="text-lg font-black mb-4">Data Management</h3>
+                            <button onclick="exportCSV()" class="w-full bg-slate-50 p-4 rounded-2xl font-bold text-sm text-left flex justify-between">Export CSV <span>↓</span></button>
+                            <button onclick="backupData()" class="w-full bg-slate-50 p-4 rounded-2xl font-bold text-sm text-left flex justify-between">Backup JSON <span>💾</span></button>
+                            <label class="w-full bg-slate-50 p-4 rounded-2xl font-bold text-sm text-left flex justify-between cursor-pointer">Restore Backup <input type="file" onchange="restoreData(event)" class="hidden"> <span>↑</span></label>
+                            <button onclick="clearLedger()" class="w-full bg-rose-50 text-rose-600 p-4 rounded-2xl font-bold text-sm text-left mt-4">Wipe Data <span>⚠</span></button>
+                        </section>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="auth-overlay" class="fixed inset-0 bg-[#f8fafc] z-[200] flex items-center justify-center p-4">
+            <div class="bg-white p-12 rounded-[3rem] w-full max-w-sm text-center shadow-2xl border">
+                <div class="w-16 h-16 bg-amber-500 rounded-2xl flex items-center justify-center mx-auto mb-8 shadow-lg shadow-amber-100">
+                    <span class="text-white text-2xl font-black italic">UC</span>
+                </div>
+                <h2 class="font-black text-2xl mb-6">ADMIN LOGIN</h2>
+                <input id="pass-input" type="password" class="bg-slate-50 border-0 p-5 w-full rounded-2xl mb-4 text-center text-2xl tracking-widest outline-none ring-1 ring-slate-100">
+                <button onclick="checkPassword()" class="bg-slate-900 text-white w-full py-5 rounded-2xl font-black">ENTER</button>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
